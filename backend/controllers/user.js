@@ -1,0 +1,124 @@
+import User from '../models/user.js';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import Follow from '../models/follow.js';
+
+export const loginUser = async (req, res) => {
+  const { email, password } = req.body;
+
+  if (!email || !password) {
+    res.status(400).json({ message: 'All fields are required!' });
+  }
+
+  const user = await User.findOne({ email });
+
+  if (!user) {
+    res.status(401).json({ message: 'Email or password is incorrect!' });
+  }
+
+  const isPasswordCorrect = await bcrypt.compare(password, user.hashedPassword);
+
+  if (!isPasswordCorrect) {
+    res.status(401).json({ message: 'Email or password is incorrect!' });
+  }
+
+  const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET);
+
+  res.cookie('token', token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    maxAge: 30 * 24 * 60 * 60 * 1000,
+  });
+
+  const { hashedPassword, ...detailsWithoutPassword } = user.toObject();
+
+  res.status(200).json(detailsWithoutPassword);
+};
+
+export const logoutUser = async (req, res) => {
+  res.clearCookie('token');
+
+  res.status(200).json({ message: 'Logout successful' });
+};
+
+export const registerUser = async (req, res) => {
+  const { username, displayName, email, password } = req.body;
+
+  if (!username || !email || !password) {
+    res.status(400).json({ message: 'All fields are required!' });
+  }
+
+  const newHashedPassword = await bcrypt.hash(password, 10);
+
+  const user = await User.create({
+    username,
+    displayName,
+    email,
+    hashedPassword: newHashedPassword,
+  });
+
+  const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET);
+
+  res.cookie('token', token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    maxAge: 30 * 24 * 60 * 60 * 1000,
+  });
+
+  const { hashedPassword, ...detailsWithoutPassword } = user.toObject();
+
+  res.status(201).json(detailsWithoutPassword);
+};
+
+export const getUser = async (req, res) => {
+  const { username } = req.params;
+
+  const user = await User.findOne({ username });
+
+  const followerCount = await Follow.countDocuments({ following: user._id });
+  const followingCount = await Follow.countDocuments({ follower: user._id });
+
+  const token = req.cookies.token;
+
+  if (!token) {
+    res
+      .status(200)
+      .json({ ...detailsWithoutPassword, followerCount, followingCount, isFollowing: false });
+  } else {
+    jwt.verify(token, process.env.JWT_SECRET, async (err, payload) => {
+      if (!err) {
+        const isExists = await Follow.exists({ follower: payload.userId, following: user._id });
+        res.status(200).json({
+          ...detailsWithoutPassword,
+          followerCount,
+          followingCount,
+          isFollowing: isExists ? true : false,
+        });
+      }
+
+      req.userId = payload.userId;
+    });
+  }
+
+  const { hashedPassword, ...detailsWithoutPassword } = user.toObject();
+};
+
+export const followUser = async (req, res) => {
+  const { username } = req.params;
+
+  const user = await User.findOne({ username });
+
+  const isFollowing = await Follow.exists({
+    follower: req.userId,
+    following: user._id,
+  });
+
+  if (isFollowing) {
+    await Follow.deleteOne({ follower: req.userId, following: user._id });
+  } else {
+    await Follow.create({ follower: req.userId, following: user._id });
+  }
+
+  const { hashedPassword, ...detailsWithoutPassword } = user.toObject();
+  res.status(200).json({ message: 'Successful' });
+};
